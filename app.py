@@ -123,6 +123,14 @@ def cloud_backup_db() -> None:
     cloud_upload(DB, "state/compatibilidad.db", "application/x-sqlite3")
 
 
+def cloud_document_path(path: Path) -> str:
+    """Crea una ruta ASCII estable; Storage no admite tildes en object keys."""
+    match = re.match(r"^([0-9a-f]{12})_", path.name, re.I)
+    token = match.group(1).lower() if match else hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:12]
+    suffix = path.suffix.lower() if re.fullmatch(r"\.[a-z0-9]+", path.suffix.lower()) else ".bin"
+    return f"uploads/{token}{suffix}"
+
+
 if not DB.exists():
     cloud_download("state/compatibilidad.db", DB)
 
@@ -163,7 +171,7 @@ def restore_cloud_files() -> None:
         apps = c.execute("SELECT id,cv_path FROM applications WHERE cv_path IS NOT NULL AND cv_path<>''").fetchall()
     for row in docs:
         local = UPLOADS / Path(row["path"]).name
-        if not local.exists(): cloud_download(f"uploads/{local.name}", local)
+        if not local.exists(): cloud_download(cloud_document_path(local), local)
         with conn() as c: c.execute("UPDATE cv_documents SET path=? WHERE id=?", (str(local), row["id"]))
     for row in apps:
         local = GENERATED / Path(row["cv_path"]).name
@@ -620,7 +628,7 @@ elif page == "Mi perfil maestro":
             with conn() as c:
                 try: c.execute("INSERT INTO cv_documents(name,sha256,path,extracted_text,added_at) VALUES(?,?,?,?,?)", (f.name, sha, str(target), text, datetime.now().isoformat(timespec="seconds"))); added += 1
                 except sqlite3.IntegrityError: pass
-            cloud_upload(target, f"uploads/{target.name}")
+            cloud_upload(target, cloud_document_path(target))
         cloud_backup_db()
         st.success(f"{added} CV nuevos guardados de forma persistente."); st.rerun()
     if docs:
