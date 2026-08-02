@@ -59,11 +59,10 @@ def server_secret(name: str, default: str = "") -> str:
 
 def require_private_access() -> None:
     expected = server_secret("APP_PASSWORD")
-    hosted = bool(server_secret("SUPABASE_URL"))
-    if hosted and not expected:
+    if not expected:
         st.error("La publicación está bloqueada hasta configurar APP_PASSWORD en los secretos del servidor.")
         st.stop()
-    if not expected or st.session_state.get("private_access"):
+    if st.session_state.get("private_access"):
         return
     st.markdown("<div class='hero'><h1>Compatibilidad CV–Postulación</h1><p>Acceso privado</p></div>", unsafe_allow_html=True)
     with st.form("private_login", clear_on_submit=True):
@@ -257,11 +256,11 @@ def personal_data() -> dict[str, str]:
     p = profile()
     contact = p.get("contact", {})
     return {
-        "name": str(stored.get("name") or p.get("name") or "René José Romero Lezama"),
-        "location": str(stored.get("location") or contact.get("location") or "Macul, Región Metropolitana"),
-        "phone": str(stored.get("phone") or contact.get("phone") or "(56 9) 7575 3966"),
-        "email": str(stored.get("email") or contact.get("email") or "romerolezama@gmail.com"),
-        "linkedin": str(stored.get("linkedin") or contact.get("linkedin") or "www.linkedin.com/in/rene-romero-lezama"),
+        "name": str(stored.get("name") or p.get("name") or ""),
+        "location": str(stored.get("location") or contact.get("location") or ""),
+        "phone": str(stored.get("phone") or contact.get("phone") or ""),
+        "email": str(stored.get("email") or contact.get("email") or ""),
+        "linkedin": str(stored.get("linkedin") or contact.get("linkedin") or ""),
     }
 
 
@@ -600,7 +599,7 @@ elif page == "Mi perfil maestro":
             personal_email = st.text_input("Correo", value=current_personal.get("email", ""))
         with pc2:
             personal_location = st.text_input("Ubicación", value=current_personal.get("location", ""))
-            personal_linkedin = st.text_input("LinkedIn", value=current_personal.get("linkedin", "www.linkedin.com/in/rene-romero-lezama"))
+            personal_linkedin = st.text_input("LinkedIn", value=current_personal.get("linkedin", ""))
         if st.form_submit_button("Guardar datos de contacto"):
             saved_personal = {"name": personal_name.strip(), "phone": personal_phone.strip(), "email": personal_email.strip(), "location": personal_location.strip(), "linkedin": personal_linkedin.strip()}
             save_setting("personal_data", json.dumps(saved_personal, ensure_ascii=False))
