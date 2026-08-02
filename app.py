@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -54,6 +55,30 @@ def server_secret(name: str, default: str = "") -> str:
         return str(st.secrets.get(name, default)).strip()
     except Exception:
         return default
+
+
+def require_private_access() -> None:
+    expected = server_secret("APP_PASSWORD")
+    hosted = bool(server_secret("SUPABASE_URL"))
+    if hosted and not expected:
+        st.error("La publicación está bloqueada hasta configurar APP_PASSWORD en los secretos del servidor.")
+        st.stop()
+    if not expected or st.session_state.get("private_access"):
+        return
+    st.markdown("<div class='hero'><h1>Compatibilidad CV–Postulación</h1><p>Acceso privado</p></div>", unsafe_allow_html=True)
+    with st.form("private_login", clear_on_submit=True):
+        password = st.text_input("Contraseña de acceso", type="password")
+        submitted = st.form_submit_button("Entrar", type="primary")
+    if submitted:
+        if hmac.compare_digest(password, expected):
+            st.session_state.private_access = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    st.stop()
+
+
+require_private_access()
 
 
 @st.cache_resource
