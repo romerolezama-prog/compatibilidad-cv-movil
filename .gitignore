@@ -1,0 +1,9 @@
+.venv/
+.herramientas/
+__pycache__/
+data/*.db
+data/*.pid
+data/uploads/
+generated/*.pdf
+registros/
+.streamlit/secrets.toml
