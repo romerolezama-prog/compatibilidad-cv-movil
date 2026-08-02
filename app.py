@@ -649,9 +649,8 @@ elif page == "Nueva postulación":
     st.header("Nueva postulación")
     current_issues = profile_issues()
     if current_issues: st.warning("Antes de analizar una oferta, completa y consolida el perfil maestro. Faltan: " + ", ".join(current_issues) + ".")
-    camera_file = st.camera_input("Tomar foto de la oferta")
-    offer_file = st.file_uploader("O subir captura, PDF, Word o TXT", type=["png","jpg","jpeg","webp","pdf","docx","txt"])
-    selected_file = camera_file or offer_file
+    offer_file = st.file_uploader("Sube una captura, PDF, Word o TXT", type=["png","jpg","jpeg","webp","pdf","docx","txt"])
+    selected_file = offer_file
     pasted = st.text_area("O pega aquí la publicación completa", height=180)
     demo = st.checkbox("Modo demostración (sin API)", help="Usa un análisis de ejemplo. Escribe 'score 74', 'score 77' o 'score 85' para probar los tres umbrales.")
     if st.button("Analizar compatibilidad", type="primary", disabled=(not selected_file and not pasted) or bool(current_issues)):
