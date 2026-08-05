@@ -301,6 +301,8 @@ Reglas obligatorias:
 - Adapta el resumen, las funciones, habilidades y herramientas al cargo y vocabulario de la oferta.
 - Usa exclusivamente hechos comprobables presentes en los CV base o el perfil maestro.
 - Conserva TODAS las empresas, cargos y fechas, en el mismo orden cronológico del perfil.
+- Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Cuento con...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
+- Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
 - Resumen de 75 a 105 palabras. No incluyas título profesional separado ni instrucciones internas.
 - Máximo 3 viñetas por empresa, cada una breve, concreta y relevante para la oferta.
 - Máximo 8 habilidades y 7 herramientas; incluye solo las relevantes y con nivel real cuando exista.
@@ -371,7 +373,7 @@ def _forbidden_claim(value: str) -> bool:
 
 def _words(value: str, limit: int) -> str:
     parts = str(value or "").split()
-    return " ".join(parts[:limit]).rstrip(" ,;:-") + ("." if parts else "")
+    return " ".join(parts[:limit]).rstrip(" ,;:-.") + ("." if parts else "")
 
 
 def _demo_cv_content(p: dict[str, Any]) -> dict[str, Any]:
@@ -454,7 +456,7 @@ def _build_cv_pdf(target: Path, content: dict[str, Any], p: dict[str, Any], comp
     personal = personal_data()
     contact = {**p.get("contact", {}), **{k: v for k, v in personal.items() if k != "name" and v}}
     email = str(contact.get("email", ""))
-    linkedin = str(contact.get("linkedin", "") or "www.linkedin.com/in/rene-romero-lezama")
+    linkedin = str(contact.get("linkedin", ""))
     if linkedin and not linkedin.startswith(("http://", "https://")):
         linkedin_href = "https://" + linkedin
     else:
