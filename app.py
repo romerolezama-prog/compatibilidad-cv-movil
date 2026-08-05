@@ -183,11 +183,12 @@ def recover_uploaded_documents() -> int:
     """Reindexa archivos persistentes si una actualización reemplazó solo la base SQLite."""
     recovered = 0
     for path in UPLOADS.iterdir():
-        if not path.is_file() or path.suffix.lower() not in (".pdf", ".docx", ".txt"):
+        if not path.is_file() or path.suffix.lower() not in (".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"):
             continue
         raw = path.read_bytes()
         sha = hashlib.sha256(raw).hexdigest()
-        text = file_text(path.name, raw)
+        try: text = validated_document_text(path.name, raw)
+        except Exception: continue
         if not text.strip():
             continue
         display_name = re.sub(r"^[0-9a-f]{12}_", "", path.name, flags=re.I)
@@ -242,6 +243,25 @@ def ask_json(prompt: str, images: list[tuple[str, bytes]] | None = None) -> dict
     return clean_json(response.output_text)
 
 
+def validated_document_text(name: str, data: bytes) -> str:
+    """Extrae texto fiel de documentos; las imágenes se transcriben con visión."""
+    text = file_text(name, data)
+    if text.strip():
+        return text
+    ext = Path(name).suffix.lower()
+    if ext in (".png", ".jpg", ".jpeg", ".webp"):
+        Image.open(io.BytesIO(data)).verify()
+        mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/jpeg"
+        result = ask_json(
+            "Transcribe fielmente este documento profesional. No interpretes, completes ni inventes. "
+            "Incluye nombres de cursos, certificaciones, instituciones, fechas, resultados, cifras y herramientas visibles. "
+            "Devuelve exclusivamente JSON válido: {\"text\":\"\"}.",
+            [(mime, data)],
+        )
+        return str(result.get("text", "")).strip()
+    return ""
+
+
 def master_text() -> str:
     with conn() as c:
         rows = c.execute("SELECT name, extracted_text FROM cv_documents ORDER BY id").fetchall()
@@ -285,37 +305,89 @@ def profile_issues(p: dict[str, Any] | None = None) -> list[str]:
 
 
 PROFILE_SCHEMA = """Devuelve exclusivamente JSON válido con esta forma:
-{"name":"","headline":"","contact":{"email":"","phone":"","linkedin":"","location":""},"summary":"","experience":[{"role":"","company":"","dates":"","achievements":[""]}],"education":[""],"skills":[""],"tools":[""],"languages":[""]}
-No inventes, no completes vacíos por intuición y elimina duplicados."""
+{"name":"","headline":"","contact":{"email":"","phone":"","linkedin":"","location":""},"summary":"","experience":[{"role":"","company":"","dates":"","industry":"","summary":"","functions":[""],"achievements":[""],"results":[""],"metrics":[""],"software":[""],"tools":[""],"competencies":[""],"methodologies":[""],"ats_keywords":[""],"projects":[""],"tags":[""]}],"education":[{"credential":"","institution":"","dates":""}],"certifications":[{"name":"","institution":"","date":""}],"courses":[{"name":"","institution":"","date":""}],"skills":[""],"tools":[""],"methodologies":[""],"languages":[""],"validated_facts":[""]}
+Reglas: no inventes ni completes vacíos por intuición; conserva cifras exactamente como aparecen; elimina duplicados; toda afirmación debe estar respaldada por los documentos."""
 
 
 ANALYSIS_SCHEMA = """Devuelve exclusivamente JSON válido:
 {"company":"","role":"","location":"","modality":"","summary":"","requirements":[""],"score":0,"match_explanation":"","strengths":[{"area":"","evidence":""}],"partial_matches":[{"area":"","detail":""}],"weaknesses":[{"area":"","impact":""}],"ats_keywords":[""],"cv_focus":[""],"suggested_questions":[""]}
-El score debe ser entero 0-100 y basarse solo en evidencia real. Pondera requisitos obligatorios, experiencia, herramientas, formación e idioma. No infieras experiencia ausente."""
+El score debe ser entero 0-100 y basarse solo en evidencia real. Pondera requisitos obligatorios, experiencia, herramientas, formación e idioma. No infieras experiencia ausente. No penalices por sí sola la ausencia de una herramienta específica: evalúa herramientas equivalentes, experiencia transferible y capacidad demostrada para ejecutar la función."""
 
 
 CV_SCHEMA = """Devuelve exclusivamente JSON válido con esta forma:
-{"summary":"","experience":[{"company":"","location":"","role":"","dates":"","bullets":[""]}],"education":[{"credential":"","institution":"","dates":""}],"skills":[""],"tools":[""],"languages":[""]}
+{"summary":"","experience":[{"company":"","location":"","role":"","dates":"","include_detail":true,"bullets":[""]}],"education":[{"credential":"","institution":"","dates":""}],"skills":[""],"tools":[""],"languages":[""]}
 Reglas obligatorias:
 - El CV busca ser visible para ATS y convincente para selección humana, sin inventar ni exagerar.
 - Adapta el resumen, las funciones, habilidades y herramientas al cargo y vocabulario de la oferta.
-- Usa exclusivamente hechos comprobables presentes en los CV base o el perfil maestro.
-- Conserva TODAS las empresas, cargos y fechas, en el mismo orden cronológico del perfil.
+- Usa exclusivamente hechos comprobables presentes en documentos cargados y en el Perfil Maestro.
+- Antes de redactar, pregúntate internamente: 'Si yo fuera el reclutador de esta oferta, ¿qué información específica me convencería de entrevistar a este candidato?'. No muestres la respuesta; úsala para seleccionar el contenido.
+- Conserva TODAS las empresas, cargos y fechas en el mismo orden cronológico. Desarrolla únicamente las experiencias relevantes; para las demás devuelve include_detail=false y bullets vacíos.
 - Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Cuento con...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
 - Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
-- Resumen de 75 a 105 palabras. No incluyas título profesional separado ni instrucciones internas.
-- Máximo 3 viñetas por empresa, cada una breve, concreta y relevante para la oferta.
+- Máximo aproximado de 700 palabras en todo el CV y máximo dos páginas.
+- Resumen de máximo 80 palabras. No incluyas título profesional separado ni instrucciones internas.
+- Máximo 4 viñetas por experiencia relevante y máximo 18 palabras por viñeta.
+- Prioriza logros, implementaciones, automatizaciones, liderazgo, optimizaciones y resultados antes que funciones.
+- Elimina funciones repetidas entre cargos; ubica cada responsabilidad donde tenga mayor impacto.
+- Incluye cifras reales (proyectos, equipos, presupuestos, CAPEX, OPEX, superficies, porcentajes, ahorros, productividad y plazos) solo cuando estén validadas en las fuentes.
 - Máximo 8 habilidades y 7 herramientas; incluye solo las relevantes y con nivel real cuando exista.
-- No incluyas porcentajes 20% o 15%, ni afirmaciones de 12 obras/proyectos.
 - No incluyas una sección de palabras clave: intégralas naturalmente en el contenido.
+- Debe poder leerse y comprenderse en menos de 30 segundos, con lenguaje profesional y sin redundancias.
 - No uses frases como 'Enfoque para esta postulación', recomendaciones o notas para el candidato."""
+
+
+def _unique_items(items: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True) if isinstance(item, (dict, list)) else re.sub(r"\s+", " ", str(item)).strip().lower()
+        if key and key not in seen:
+            seen.add(key); result.append(item)
+    return result
+
+
+def _merge_value(old: Any, new: Any) -> Any:
+    if old in (None, "", [], {}): return new
+    if new in (None, "", [], {}): return old
+    if isinstance(old, list) and isinstance(new, list): return _unique_items(old + new)
+    if isinstance(old, dict) and isinstance(new, dict):
+        merged = dict(old)
+        for key, value in new.items(): merged[key] = _merge_value(merged.get(key), value)
+        return merged
+    if isinstance(old, str) and isinstance(new, str):
+        if old.strip().lower() in new.strip().lower(): return new
+        if new.strip().lower() in old.strip().lower(): return old
+        return new if len(new.strip()) > len(old.strip()) else old
+    return old
+
+
+def merge_profiles(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = _merge_value(existing, {k:v for k,v in incoming.items() if k != "experience"})
+    merged_experience = [dict(x) for x in existing.get("experience", []) if isinstance(x, dict)]
+    for new_exp in incoming.get("experience", []):
+        if not isinstance(new_exp, dict): continue
+        company = re.sub(r"\W+", "", str(new_exp.get("company", "")).lower())
+        role = re.sub(r"\W+", "", str(new_exp.get("role", "")).lower())
+        match_index = next((i for i,x in enumerate(merged_experience) if company and company == re.sub(r"\W+", "", str(x.get("company", "")).lower()) and (not role or role == re.sub(r"\W+", "", str(x.get("role", "")).lower()))), None)
+        if match_index is None: merged_experience.append(new_exp)
+        else: merged_experience[match_index] = _merge_value(merged_experience[match_index], new_exp)
+    merged["experience"] = merged_experience
+    return merged
 
 
 def rebuild_profile() -> None:
     docs = master_text()
     if not docs.strip():
-        raise RuntimeError("Primero carga al menos un CV.")
-    result = ask_json("Consolida estos CV en un perfil maestro fiel. " + PROFILE_SCHEMA + "\n\nCV:\n" + docs[:120000])
+        raise RuntimeError("Primero carga al menos un documento profesional.")
+    existing = profile()
+    result = ask_json(
+        "Actualiza un Perfil Maestro profesional acumulativo. Compara el perfil existente con todos los documentos validados; "
+        "incorpora información nueva, fusiona información complementaria, evita duplicados y nunca elimines información previamente validada. "
+        "El Perfil Maestro no es un CV y no tiene límite de extensión. " + PROFILE_SCHEMA +
+        "\n\nPERFIL MAESTRO EXISTENTE:\n" + json.dumps(existing, ensure_ascii=False)[:80000] +
+        "\n\nDOCUMENTOS VALIDADOS:\n" + docs[:140000]
+    )
+    result = merge_profiles(existing, result)
     saved = personal_data()
     result["name"] = saved.get("name") or result.get("name", "")
     result.setdefault("contact", {})
@@ -333,15 +405,9 @@ def recommendation(score: int) -> str:
     return "NO POSTULAR"
 
 
-def demo_analysis(text: str) -> dict[str, Any]:
-    score_match = re.search(r"(?:score|compatibilidad)\s*[:=]?\s*(\d{1,3})", text, re.I)
-    score = min(100, int(score_match.group(1))) if score_match else 82
-    return {"_demo":True,"company":"Empresa de demostración","role":"Programador/a de Obras","location":"Chile","modality":"Presencial","summary":"Planificación y control del programa de obra, hitos, recursos y reportabilidad.","requirements":["Experiencia en planificación de obras","Manejo de cronogramas y reportes","Coordinación con equipos de terreno"],"score":score,"match_explanation":"Tu experiencia en planificación, seguimiento de avances y coordinación se relaciona con las funciones centrales del cargo.","strengths":[{"area":"Planificación y programación","evidence":"Alta"},{"area":"Control de avances","evidence":"Alta"}],"partial_matches":[],"weaknesses":[{"area":"Experiencia en el proyecto específico","impact":"Por confirmar"}],"ats_keywords":["cronograma","hitos","avance físico","planificación"],"cv_focus":["Priorizar planificación y control"],"suggested_questions":["Comente su experiencia en el cargo.","¿Cuenta con experiencia en proyectos similares?","Indique sus pretensiones de renta."]}
-
-
 def analyze_offer(text: str, images: list[tuple[str, bytes]]) -> dict[str, Any]:
     p = profile()
-    prompt = f"""Analiza la oferta laboral y compárala contra el perfil maestro. Extrae empresa, cargo, ubicación, modalidad y requisitos desde la oferta. {ANALYSIS_SCHEMA}
+    prompt = f"""Actúa como reclutador senior y especialista ATS. Analiza la oferta laboral y compárala contra el Perfil Maestro. Extrae empresa, cargo, ubicación, modalidad y requisitos desde la oferta. Considera industria, responsabilidades, logros, competencias y experiencia transferible, no solo coincidencias literales. {ANALYSIS_SCHEMA}
 
 PERFIL MAESTRO:
 {json.dumps(p, ensure_ascii=False)[:90000]}
@@ -368,7 +434,8 @@ def safe(value: Any) -> str:
 
 
 def _forbidden_claim(value: str) -> bool:
-    return bool(re.search(r"(?:20\s*%|15\s*%|\b12\s+(?:obras|proyectos))", value, re.I))
+    # Las cifras se permiten cuando están respaldadas por documentos validados.
+    return False
 
 
 def _words(value: str, limit: int) -> str:
@@ -376,21 +443,9 @@ def _words(value: str, limit: int) -> str:
     return " ".join(parts[:limit]).rstrip(" ,;:-.") + ("." if parts else "")
 
 
-def _demo_cv_content(p: dict[str, Any]) -> dict[str, Any]:
-    experiences = []
-    for exp in p.get("experience", []):
-        bullets = [str(x) for x in exp.get("achievements", []) if not _forbidden_claim(str(x))][:3]
-        experiences.append({"company": exp.get("company", ""), "location": "Santiago", "role": exp.get("role", ""), "dates": exp.get("dates", ""), "bullets": bullets})
-    education = [{"credential": str(x), "institution": "", "dates": ""} for x in p.get("education", [])]
-    return {"summary": _words(p.get("summary", ""), 95), "experience": experiences, "education": education, "skills": p.get("skills", [])[:8], "tools": p.get("tools", [])[:7], "languages": p.get("languages", [])}
-
-
 def adapt_cv_content(analysis: dict[str, Any]) -> dict[str, Any]:
     p = profile()
-    if analysis.get("_demo"):
-        result = _demo_cv_content(p)
-    else:
-        prompt = f"""Crea el contenido final de un CV adaptado a esta oferta. {CV_SCHEMA}
+    prompt = f"""Crea el contenido final de un CV adaptado a esta oferta. {CV_SCHEMA}
 
 OFERTA Y ANÁLISIS INTERNO:
 {json.dumps(analysis, ensure_ascii=False)[:60000]}
@@ -401,32 +456,68 @@ PERFIL MAESTRO ESTRUCTURADO:
 EVIDENCIA TEXTUAL DE TODOS LOS CV BASE:
 {master_text()[:110000]}
 """
-        result = ask_json(prompt)
+    result = ask_json(prompt)
+    result = ask_json(f"""Realiza la validación final del borrador como reclutador senior con 30 segundos para decidir una entrevista. Reescribe automáticamente lo necesario y devuelve únicamente el JSON final con el mismo esquema. {CV_SCHEMA}
+
+Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras; primera persona singular; máximo 4 bullets relevantes de 18 palabras; todas las empresas/cargos/fechas presentes; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
+
+BORRADOR:
+{json.dumps(result, ensure_ascii=False)[:60000]}
+
+OFERTA:
+{json.dumps(analysis, ensure_ascii=False)[:45000]}
+
+PERFIL MAESTRO Y EVIDENCIA VALIDADA:
+{json.dumps(p, ensure_ascii=False)[:70000]}
+{master_text()[:90000]}
+""")
 
     clean_experiences = []
     adapted = result.get("experience", [])
+    used_bullets: set[str] = set()
     for base_exp in p.get("experience", []):
         company = str(base_exp.get("company", ""))
         match = next((x for x in adapted if company.lower() in str(x.get("company", "")).lower() or str(x.get("company", "")).lower() in company.lower()), None)
         source = match or base_exp
-        bullets = source.get("bullets", source.get("achievements", []))
-        bullets = [_words(x, 24) for x in bullets if str(x).strip() and not _forbidden_claim(str(x))][:3]
-        if not bullets:
-            bullets = [_words(x, 24) for x in base_exp.get("achievements", []) if not _forbidden_claim(str(x))][:2]
+        relevant = bool(match and match.get("include_detail", True))
+        bullets = source.get("bullets", []) if relevant else []
+        selected_bullets = []
+        for item in bullets:
+            normalized = re.sub(r"\W+", " ", str(item).lower()).strip()
+            if not normalized or normalized in used_bullets: continue
+            used_bullets.add(normalized)
+            selected_bullets.append(_words(item, 18))
+            if len(selected_bullets) == 4: break
         clean_experiences.append({
             "company": company,
             "location": str(source.get("location", "Santiago")),
             "role": str(base_exp.get("role", source.get("role", ""))),
             "dates": str(base_exp.get("dates", source.get("dates", ""))),
-            "bullets": bullets,
+            "include_detail": relevant,
+            "bullets": selected_bullets,
         })
     result["experience"] = clean_experiences
-    result["summary"] = _words(result.get("summary", p.get("summary", "")), 105)
+    result["summary"] = _words(result.get("summary", p.get("summary", "")), 80)
     result["skills"] = list(dict.fromkeys(str(x) for x in result.get("skills", []) if str(x).strip()))[:8]
     result["tools"] = list(dict.fromkeys(str(x) for x in result.get("tools", []) if str(x).strip()))[:7]
     result["languages"] = result.get("languages") or p.get("languages", [])
     result["education"] = result.get("education") or [{"credential": str(x), "institution": "", "dates": ""} for x in p.get("education", [])]
+    while cv_word_count(result) > 700:
+        candidate = next((x for x in reversed(result["experience"]) if x.get("bullets")), None)
+        if not candidate: break
+        candidate["bullets"].pop()
     return result
+
+
+def cv_word_count(content: dict[str, Any]) -> int:
+    fields: list[str] = [str(content.get("summary", ""))]
+    for exp in content.get("experience", []):
+        fields.extend([str(exp.get("company", "")), str(exp.get("role", "")), str(exp.get("dates", ""))])
+        fields.extend(str(x) for x in exp.get("bullets", []))
+    for key in ("education", "skills", "tools", "languages"):
+        for item in content.get(key, []):
+            fields.append(" ".join(str(v) for v in item.values()) if isinstance(item, dict) else str(item))
+    return len(re.findall(r"\b[\wÁÉÍÓÚÜÑáéíóúüñ]+\b", " ".join(fields)))
 
 
 def _cv_styles(compact: bool = False) -> dict[str, ParagraphStyle]:
@@ -451,7 +542,7 @@ def _section(title: str, styles: dict[str, ParagraphStyle]) -> Table:
     return table
 
 
-def _build_cv_pdf(target: Path, content: dict[str, Any], p: dict[str, Any], compact: bool = False, bullet_limit: int = 3) -> None:
+def _build_cv_pdf(target: Path, content: dict[str, Any], p: dict[str, Any], compact: bool = False, bullet_limit: int = 4) -> None:
     styles = _cv_styles(compact)
     personal = personal_data()
     contact = {**p.get("contact", {}), **{k: v for k, v in personal.items() if k != "name" and v}}
@@ -509,9 +600,11 @@ def make_cv(app_id: int, analysis: dict[str, Any]) -> Path:
         raise RuntimeError("Completa o vuelve a consolidar el perfil maestro. Faltan: " + ", ".join(issues) + ".")
     content = analysis.get("adapted_cv") or adapt_cv_content(analysis)
     target = GENERATED / f"CV_adaptado_{app_id}.pdf"
-    _build_cv_pdf(target, content, p, compact=False, bullet_limit=3)
+    if cv_word_count(content) > 700:
+        raise RuntimeError("La validación no logró ajustar el CV al máximo aproximado de 700 palabras.")
+    _build_cv_pdf(target, content, p, compact=False, bullet_limit=4)
     if len(PdfReader(str(target)).pages) > 2:
-        content["summary"] = _words(content.get("summary", ""), 82)
+        content["summary"] = _words(content.get("summary", ""), 80)
         content["skills"] = content.get("skills", [])[:7]
         content["tools"] = content.get("tools", [])[:6]
         _build_cv_pdf(target, content, p, compact=True, bullet_limit=2)
@@ -596,9 +689,9 @@ if page == "Configuración":
 elif page == "Mi perfil maestro":
     st.header("Mi perfil maestro")
     with conn() as c: docs = c.execute("SELECT * FROM cv_documents ORDER BY id DESC").fetchall()
-    st.metric("CV procesados", len(docs)); st.caption("Última consolidación: " + (setting("profile_updated", "Aún no realizada")))
+    st.metric("Documentos procesados", len(docs)); st.caption("Última consolidación: " + (setting("profile_updated", "Aún no realizada")))
     if recovered_documents:
-        st.success(f"Se recuperaron automáticamente {recovered_documents} CV que ya estaban guardados en la carpeta de la aplicación.")
+        st.success(f"Se recuperaron automáticamente {recovered_documents} documentos que ya estaban guardados.")
     st.subheader("Datos de contacto")
     current_personal = personal_data()
     with st.form("personal_data_form"):
@@ -620,32 +713,33 @@ elif page == "Mi perfil maestro":
                 save_setting("master_profile", json.dumps(existing_profile, ensure_ascii=False))
             st.success("Datos de contacto guardados.")
             st.rerun()
-    files = st.file_uploader("Agregar CV (puedes seleccionar varios)", type=["pdf","docx","txt"], accept_multiple_files=True)
-    if st.button("Guardar CV seleccionados", disabled=not files):
+    files = st.file_uploader("Agregar documentos validados: CV, certificados, cursos o cartas", type=["pdf","docx","txt","png","jpg","jpeg","webp"], accept_multiple_files=True)
+    if st.button("Guardar documentos seleccionados", disabled=not files):
         added = 0
         for f in files:
-            raw = f.getvalue(); sha = hashlib.sha256(raw).hexdigest(); text = file_text(f.name, raw)
-            if not text.strip(): st.warning(f"{f.name}: no se pudo extraer texto; si es un PDF escaneado, conviértelo a DOCX/TXT."); continue
+            raw = f.getvalue(); sha = hashlib.sha256(raw).hexdigest()
+            try: text = validated_document_text(f.name, raw)
+            except Exception as e: st.warning(f"{f.name}: no se pudo validar el contenido ({e})."); continue
+            if not text.strip(): st.warning(f"{f.name}: no se pudo extraer texto; si es un PDF escaneado, súbelo como imagen o conviértelo a DOCX/TXT."); continue
             target = UPLOADS / f"{sha[:12]}_{Path(f.name).name}"; target.write_bytes(raw)
             with conn() as c:
                 try: c.execute("INSERT INTO cv_documents(name,sha256,path,extracted_text,added_at) VALUES(?,?,?,?,?)", (f.name, sha, str(target), text, datetime.now().isoformat(timespec="seconds"))); added += 1
                 except sqlite3.IntegrityError: pass
             cloud_upload(target, cloud_document_path(target))
         cloud_backup_db()
-        st.success(f"{added} CV nuevos guardados de forma persistente."); st.rerun()
+        st.success(f"{added} documentos nuevos guardados y validados."); st.rerun()
     if docs:
         for d in docs: st.write(f"✓ {d['name']} — {d['added_at']}")
         if st.button("Consolidar / actualizar perfil con IA", type="primary"):
             try:
-                with st.spinner("Consolidando experiencia sin duplicados..."): rebuild_profile()
-                st.success("Perfil maestro actualizado."); st.rerun()
+                with st.spinner("Enriqueciendo el Perfil Maestro sin eliminar información validada..."): rebuild_profile()
+                st.success("Perfil Maestro enriquecido y actualizado."); st.rerun()
             except Exception as e: st.error(str(e))
     p = profile()
     if p:
-        edited = st.text_area("Perfil consolidado (JSON editable)", json.dumps(p, ensure_ascii=False, indent=2), height=420)
-        if st.button("Guardar correcciones manuales"):
-            try: save_setting("master_profile", json.dumps(json.loads(edited), ensure_ascii=False)); st.success("Correcciones guardadas.")
-            except json.JSONDecodeError: st.error("El contenido no es JSON válido.")
+        with st.expander("Ver Perfil Maestro consolidado"):
+            st.json(p)
+        st.caption("Para incorporar o corregir información, carga un documento que la respalde y vuelve a consolidar.")
 
 elif page == "Nueva postulación":
     st.header("Nueva postulación")
@@ -654,7 +748,6 @@ elif page == "Nueva postulación":
     offer_file = st.file_uploader("Sube una captura, PDF, Word o TXT", type=["png","jpg","jpeg","webp","pdf","docx","txt"])
     selected_file = offer_file
     pasted = st.text_area("O pega aquí la publicación completa", height=180)
-    demo = st.checkbox("Modo demostración (sin API)", help="Usa un análisis de ejemplo. Escribe 'score 74', 'score 77' o 'score 85' para probar los tres umbrales.")
     if st.button("Analizar compatibilidad", type="primary", disabled=(not selected_file and not pasted) or bool(current_issues)):
         try:
             text = pasted; images: list[tuple[str, bytes]] = []
@@ -664,7 +757,7 @@ elif page == "Nueva postulación":
                     Image.open(io.BytesIO(raw)).verify(); images.append((selected_file.type or "image/jpeg", raw))
                 else: text += "\n" + file_text(selected_file.name, raw)
             with st.spinner("Extrayendo oferta y comparando con el perfil..."):
-                a = demo_analysis(text) if demo else analyze_offer(text, images)
+                a = analyze_offer(text, images)
                 app_id = save_application(a, text or f"Imagen: {selected_file.name}")
             st.session_state.last_result = (app_id, a)
         except Exception as e: st.error(f"No fue posible analizar la oferta: {e}")
