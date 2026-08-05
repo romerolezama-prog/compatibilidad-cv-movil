@@ -22,7 +22,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
     from supabase import create_client
@@ -305,8 +305,8 @@ def profile_issues(p: dict[str, Any] | None = None) -> list[str]:
 
 
 PROFILE_SCHEMA = """Devuelve exclusivamente JSON válido con esta forma:
-{"name":"","headline":"","contact":{"email":"","phone":"","linkedin":"","location":""},"summary":"","experience":[{"role":"","company":"","dates":"","industry":"","summary":"","functions":[""],"achievements":[""],"results":[""],"metrics":[""],"software":[""],"tools":[""],"competencies":[""],"methodologies":[""],"ats_keywords":[""],"projects":[""],"tags":[""]}],"education":[{"credential":"","institution":"","dates":""}],"certifications":[{"name":"","institution":"","date":""}],"courses":[{"name":"","institution":"","date":""}],"skills":[""],"tools":[""],"methodologies":[""],"languages":[""],"validated_facts":[""]}
-Reglas: no inventes ni completes vacíos por intuición; conserva cifras exactamente como aparecen; elimina duplicados; toda afirmación debe estar respaldada por los documentos."""
+{"name":"","headline":"","contact":{"email":"","phone":"","linkedin":"","location":""},"summary":"","experience":[{"role":"","role_variants":[""],"company":"","dates":"","industry":"","summary":"","functions":[""],"achievements":[""],"results":[""],"metrics":[""],"software":[""],"tools":[""],"competencies":[""],"methodologies":[""],"ats_keywords":[""],"projects":[""],"tags":[""]}],"education":[{"credential":"","institution":"","dates":""}],"certifications":[{"name":"","institution":"","date":""}],"courses":[{"name":"","institution":"","date":""}],"skills":[""],"tools":[""],"methodologies":[""],"languages":[""],"validated_facts":[""]}
+Reglas: no inventes ni completes vacíos por intuición; conserva cifras exactamente como aparecen; elimina duplicados; toda afirmación debe estar respaldada por los documentos. Para empresa, cargo y fechas elige una denominación canónica exacta y nunca combines títulos con barras. Si existen variantes de cargo, conserva las alternativas en role_variants, pero usa en role la versión respaldada de forma más consistente. No calcules años totales de experiencia ni generalices industrias o tipos de proyectos a partir de fechas o cargos."""
 
 
 ANALYSIS_SCHEMA = """Devuelve exclusivamente JSON válido:
@@ -326,6 +326,9 @@ Reglas obligatorias:
 - Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
 - Máximo aproximado de 700 palabras en todo el CV y máximo dos páginas.
 - Resumen de máximo 80 palabras. No incluyas título profesional separado ni instrucciones internas.
+- No abras el resumen con 'Cuento con títulos', una lista de títulos académicos ni el número de títulos. Empieza por la propuesta de valor relevante para la vacante.
+- No calcules ni declares años de experiencia, industrias o tipos de proyectos salvo que la fuente documental los afirme explícitamente y sin ambigüedad.
+- Reproduce los cargos canónicos del Perfil Maestro; nunca fusiones cargos distintos con barras ni copies el cargo de otra empresa.
 - Máximo 4 viñetas por experiencia relevante y máximo 18 palabras por viñeta.
 - Prioriza logros, implementaciones, automatizaciones, liderazgo, optimizaciones y resultados antes que funciones.
 - Elimina funciones repetidas entre cargos; ubica cada responsabilidad donde tenga mayor impacto.
@@ -363,14 +366,30 @@ def _merge_value(old: Any, new: Any) -> Any:
 
 def merge_profiles(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = _merge_value(existing, {k:v for k,v in incoming.items() if k != "experience"})
+    # Resumen y titular son síntesis regenerables, no hechos históricos acumulables.
+    for synthesis_key in ("summary", "headline"):
+        if str(incoming.get(synthesis_key, "")).strip(): merged[synthesis_key] = incoming[synthesis_key]
     merged_experience = [dict(x) for x in existing.get("experience", []) if isinstance(x, dict)]
     for new_exp in incoming.get("experience", []):
         if not isinstance(new_exp, dict): continue
         company = re.sub(r"\W+", "", str(new_exp.get("company", "")).lower())
         role = re.sub(r"\W+", "", str(new_exp.get("role", "")).lower())
-        match_index = next((i for i,x in enumerate(merged_experience) if company and company == re.sub(r"\W+", "", str(x.get("company", "")).lower()) and (not role or role == re.sub(r"\W+", "", str(x.get("role", "")).lower()))), None)
-        if match_index is None: merged_experience.append(new_exp)
-        else: merged_experience[match_index] = _merge_value(merged_experience[match_index], new_exp)
+        dates = re.sub(r"\W+", "", str(new_exp.get("dates", "")).lower())
+        match_index = next((i for i,x in enumerate(merged_experience) if company and company == re.sub(r"\W+", "", str(x.get("company", "")).lower()) and ((dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())) or (role and role == re.sub(r"\W+", "", str(x.get("role", "")).lower())))), None)
+        if match_index is None:
+            merged_experience.append(new_exp)
+        else:
+            previous = merged_experience[match_index]
+            combined = _merge_value(previous, new_exp)
+            # Los campos canónicos no se concatenan: la nueva consolidación resuelve la evidencia documental.
+            for identity_key in ("company", "role", "dates", "industry"):
+                if str(new_exp.get(identity_key, "")).strip(): combined[identity_key] = new_exp[identity_key]
+            old_role = str(previous.get("role", "")).strip()
+            new_role = str(new_exp.get("role", "")).strip()
+            variants = list(combined.get("role_variants", []))
+            if old_role and old_role != new_role: variants.append(old_role)
+            combined["role_variants"] = _unique_items(variants)
+            merged_experience[match_index] = combined
     merged["experience"] = merged_experience
     return merged
 
@@ -459,7 +478,7 @@ EVIDENCIA TEXTUAL DE TODOS LOS CV BASE:
     result = ask_json(prompt)
     result = ask_json(f"""Realiza la validación final del borrador como reclutador senior con 30 segundos para decidir una entrevista. Reescribe automáticamente lo necesario y devuelve únicamente el JSON final con el mismo esquema. {CV_SCHEMA}
 
-Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras; primera persona singular; máximo 4 bullets relevantes de 18 palabras; todas las empresas/cargos/fechas presentes; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
+Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto con propuesta de valor, no con títulos académicos; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; máximo 4 bullets relevantes de 18 palabras; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
 
 BORRADOR:
 {json.dumps(result, ensure_ascii=False)[:60000]}
@@ -477,7 +496,9 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
     used_bullets: set[str] = set()
     for base_exp in p.get("experience", []):
         company = str(base_exp.get("company", ""))
-        match = next((x for x in adapted if company.lower() in str(x.get("company", "")).lower() or str(x.get("company", "")).lower() in company.lower()), None)
+        dates = re.sub(r"\W+", "", str(base_exp.get("dates", "")).lower())
+        company_matches = [x for x in adapted if company.lower() in str(x.get("company", "")).lower() or str(x.get("company", "")).lower() in company.lower()]
+        match = next((x for x in company_matches if dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())), None) or (company_matches[0] if company_matches else None)
         source = match or base_exp
         relevant = bool(match and match.get("include_detail", True))
         bullets = source.get("bullets", []) if relevant else []
@@ -491,7 +512,7 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
         clean_experiences.append({
             "company": company,
             "location": str(source.get("location", "Santiago")),
-            "role": str(base_exp.get("role", source.get("role", ""))),
+            "role": str(source.get("role") or base_exp.get("role", "")),
             "dates": str(base_exp.get("dates", source.get("dates", ""))),
             "include_detail": relevant,
             "bullets": selected_bullets,
@@ -567,25 +588,25 @@ def _build_cv_pdf(target: Path, content: dict[str, Any], p: dict[str, Any], comp
         heading = Table([[Paragraph(company_line, styles["company"]), Paragraph(safe(exp.get("dates", "")), styles["date"])]], colWidths=[108*mm, 42*mm], hAlign="LEFT")
         heading.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("ALIGN", (1,0), (1,0), "RIGHT"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 0)]))
         bullets = exp.get("bullets", [])[:bullet_limit]
-        first = Paragraph(safe(bullets[0]), styles["bullet"], bulletText="•") if bullets else Spacer(1, 0)
+        first = Paragraph(safe(bullets[0]), styles["bullet"], bulletText="-") if bullets else Spacer(1, 0)
         story.append(KeepTogether([heading, Paragraph(safe(exp.get("role", "")), styles["role"]), first]))
         for item in bullets[1:]:
-            story.append(Paragraph(safe(item), styles["bullet"], bulletText="•"))
+            story.append(Paragraph(safe(item), styles["bullet"], bulletText="-"))
         story.append(Spacer(1, 2.2*mm if not compact else 1.4*mm))
 
-    story += [_section("Antecedentes Académicos", styles), Spacer(1, 2*mm)]
+    story += [PageBreak(), _section("Antecedentes Académicos", styles), Spacer(1, 2*mm)]
     for edu in content.get("education", []):
         if isinstance(edu, str): edu = {"credential": edu, "institution": "", "dates": ""}
         row = Table([[Paragraph(f"<b>{safe(edu.get('credential'))}</b><br/>{safe(edu.get('institution',''))}", styles["body"]), Paragraph(safe(edu.get("dates", "")), styles["date"])]], colWidths=[118*mm, 32*mm], hAlign="LEFT")
         row.setStyle(TableStyle([("ALIGN", (1,0), (1,0), "RIGHT"), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 1)]))
         story.append(row)
 
-    skill_text = "<br/>".join(f"• {safe(x)}" for x in content.get("skills", []))
-    tool_text = "<br/>".join(f"• {safe(x)}" for x in content.get("tools", []))
+    skill_text = "<br/>".join(f"- {safe(x)}" for x in content.get("skills", []))
+    tool_text = "<br/>".join(f"- {safe(x)}" for x in content.get("tools", []))
     abilities = Table([[Paragraph("Habilidades", styles["label"]), Paragraph(skill_text, styles["body"])], [Paragraph("Software", styles["label"]), Paragraph(tool_text, styles["body"])]], colWidths=[40*mm, 110*mm], hAlign="LEFT")
     abilities.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 2), ("RIGHTPADDING", (0,0), (-1,-1), 2), ("TOPPADDING", (0,0), (-1,-1), 1), ("BOTTOMPADDING", (0,0), (-1,-1), 2)]))
     story += [Spacer(1, 2.5*mm), KeepTogether([_section("Habilidades", styles), Spacer(1, 2*mm), abilities]), Spacer(1, 2.5*mm), _section("Información Adicional", styles), Spacer(1, 2*mm)]
-    language = ", ".join(str(x) for x in content.get("languages", []))
+    language = ", ".join(re.sub(r"\bnivel\s+reportado\b", "nivel", str(x), flags=re.I) for x in content.get("languages", []))
     if language: story.append(Paragraph(f"<b>Idiomas:</b>&nbsp;&nbsp;&nbsp;{safe(language)}", styles["body"]))
     if linkedin: story.append(Paragraph(f'<b>LinkedIn:</b>&nbsp;&nbsp;&nbsp;<link href="{safe(linkedin_href)}" color="blue"><u>{safe(linkedin.replace("https://", ""))}</u></link>', styles["body"]))
 
