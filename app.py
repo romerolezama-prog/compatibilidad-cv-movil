@@ -322,11 +322,11 @@ Reglas obligatorias:
 - Usa exclusivamente hechos comprobables presentes en documentos cargados y en el Perfil Maestro.
 - Antes de redactar, pregúntate internamente: 'Si yo fuera el reclutador de esta oferta, ¿qué información específica me convencería de entrevistar a este candidato?'. No muestres la respuesta; úsala para seleccionar el contenido.
 - Conserva TODAS las empresas, cargos y fechas en el mismo orden cronológico. Desarrolla únicamente las experiencias relevantes; para las demás devuelve include_detail=false y bullets vacíos.
-- Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Cuento con...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
+- Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Constructor Civil especializado en...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
 - Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
 - Máximo aproximado de 700 palabras en todo el CV y máximo dos páginas.
 - Resumen de máximo 80 palabras. No incluyas título profesional separado ni instrucciones internas.
-- No abras el resumen con 'Cuento con títulos', una lista de títulos académicos ni el número de títulos. Empieza por la propuesta de valor relevante para la vacante.
+- Abre el resumen directamente con la profesión validada más pertinente para la oferta, seguida de la especialización relevante: por ejemplo, 'Constructor Civil especializado en...' o 'Ingeniero Civil especializado en...'. No uses 'Como', 'Soy' ni 'Cuento con', y no enumeres ambos títulos salvo que la oferta haga necesario mencionarlos.
 - No calcules ni declares años de experiencia, industrias o tipos de proyectos salvo que la fuente documental los afirme explícitamente y sin ambigüedad.
 - Reproduce los cargos canónicos del Perfil Maestro; nunca fusiones cargos distintos con barras ni copies el cargo de otra empresa.
 - Máximo 4 viñetas por experiencia relevante y máximo 18 palabras por viñeta.
@@ -478,7 +478,7 @@ EVIDENCIA TEXTUAL DE TODOS LOS CV BASE:
     result = ask_json(prompt)
     result = ask_json(f"""Realiza la validación final del borrador como reclutador senior con 30 segundos para decidir una entrevista. Reescribe automáticamente lo necesario y devuelve únicamente el JSON final con el mismo esquema. {CV_SCHEMA}
 
-Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto con propuesta de valor, no con títulos académicos; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; máximo 4 bullets relevantes de 18 palabras; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
+Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto directamente con la profesión validada más pertinente y su especialización, sin 'Como', 'Soy' ni 'Cuento con'; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; máximo 4 bullets relevantes de 18 palabras; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
 
 BORRADOR:
 {json.dumps(result, ensure_ascii=False)[:60000]}
