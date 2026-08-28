@@ -321,7 +321,7 @@ Reglas obligatorias:
 - Adapta el resumen, las funciones, habilidades y herramientas al cargo y vocabulario de la oferta.
 - Usa exclusivamente hechos comprobables presentes en documentos cargados y en el Perfil Maestro.
 - Antes de redactar, pregúntate internamente: 'Si yo fuera el reclutador de esta oferta, ¿qué información específica me convencería de entrevistar a este candidato?'. No muestres la respuesta; úsala para seleccionar el contenido.
-- Conserva TODAS las empresas, cargos y fechas en el mismo orden cronológico. Desarrolla únicamente las experiencias relevantes; para las demás devuelve include_detail=false y bullets vacíos.
+- Conserva TODAS las empresas, cargos y fechas en el mismo orden cronológico. Cada experiencia debe tener al menos 1 viñeta real, validada y relevante para la oferta; las experiencias de mayor impacto pueden tener hasta 4. Nunca devuelvas una experiencia con bullets vacíos ni como simple encabezado.
 - Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Constructor Civil especializado en...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
 - Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
 - Máximo aproximado de 700 palabras en todo el CV y máximo dos páginas.
@@ -329,7 +329,7 @@ Reglas obligatorias:
 - Abre el resumen directamente con la profesión validada más pertinente para la oferta, seguida de la especialización relevante: por ejemplo, 'Constructor Civil especializado en...' o 'Ingeniero Civil especializado en...'. No uses 'Como', 'Soy' ni 'Cuento con', y no enumeres ambos títulos salvo que la oferta haga necesario mencionarlos.
 - No calcules ni declares años de experiencia, industrias o tipos de proyectos salvo que la fuente documental los afirme explícitamente y sin ambigüedad.
 - Reproduce los cargos canónicos del Perfil Maestro; nunca fusiones cargos distintos con barras ni copies el cargo de otra empresa.
-- Máximo 4 viñetas por experiencia relevante y máximo 18 palabras por viñeta.
+- Entre 1 y 4 viñetas por experiencia y máximo 18 palabras por viñeta.
 - Prioriza logros, implementaciones, automatizaciones, liderazgo, optimizaciones y resultados antes que funciones.
 - Elimina funciones repetidas entre cargos; ubica cada responsabilidad donde tenga mayor impacto.
 - Incluye cifras reales (proyectos, equipos, presupuestos, CAPEX, OPEX, superficies, porcentajes, ahorros, productividad y plazos) solo cuando estén validadas en las fuentes.
@@ -462,6 +462,62 @@ def _words(value: str, limit: int) -> str:
     return " ".join(parts[:limit]).rstrip(" ,;:-.") + ("." if parts else "")
 
 
+def _summary_violations(summary: str) -> list[str]:
+    """Detecta incumplimientos que nunca deben llegar al PDF final."""
+    text = re.sub(r"\s+", " ", str(summary or "")).strip()
+    normalized = text.casefold()
+    issues: list[str] = []
+    if not re.match(r"^(constructor civil|ingeniero civil)\b", normalized):
+        issues.append("no comienza con la profesión pertinente")
+    if "constructor civil" in normalized and "ingeniero civil" in normalized:
+        issues.append("enumera ambos títulos profesionales")
+    if re.search(r"\b(?:más de\s+)?(?:\d+|[a-záéíóúñ]+)\s+años?(?:\s+de experiencia|\s+(?:dirigiendo|gestionando|liderando|en))?\b", normalized):
+        issues.append("declara una duración de experiencia")
+    if re.match(r"^(como|soy|cuento con|aporto)\b", normalized):
+        issues.append("utiliza una apertura prohibida")
+    return issues
+
+
+def _correct_summary(result: dict[str, Any], analysis: dict[str, Any], p: dict[str, Any]) -> dict[str, Any]:
+    """Reescribe solo el resumen cuando incumple las reglas críticas."""
+    for _ in range(2):
+        violations = _summary_violations(result.get("summary", ""))
+        if not violations:
+            return result
+        correction = ask_json(f"""Corrige ÚNICAMENTE el resumen profesional y devuelve exclusivamente JSON válido con esta forma:
+{{"summary":""}}
+
+Condiciones de aceptación obligatorias:
+- Máximo 80 palabras.
+- Primera frase iniciada directamente con UNA sola profesión validada y pertinente para la oferta: 'Constructor Civil especializado en...' o 'Ingeniero Civil especializado en...'.
+- No comenzar con 'Como', 'Soy', 'Cuento con' ni 'Aporto'.
+- No mencionar ambos títulos profesionales.
+- No declarar ni calcular años de experiencia, aunque aparezcan en el borrador.
+- Usar únicamente experiencia, funciones, herramientas y resultados respaldados por el Perfil Maestro y la evidencia documental.
+- Adaptar el contenido a la oferta e integrar palabras ATS naturalmente.
+
+INCUMPLIMIENTOS DETECTADOS:
+{json.dumps(violations, ensure_ascii=False)}
+
+RESUMEN RECHAZADO:
+{result.get("summary", "")}
+
+OFERTA:
+{json.dumps(analysis, ensure_ascii=False)[:30000]}
+
+PERFIL MAESTRO:
+{json.dumps(p, ensure_ascii=False)[:50000]}
+
+EVIDENCIA VALIDADA:
+{master_text()[:60000]}
+""")
+        result["summary"] = _words(correction.get("summary", ""), 80)
+    violations = _summary_violations(result.get("summary", ""))
+    if violations:
+        raise RuntimeError("No se pudo generar un resumen profesional válido sin inventar información. Intenta generar el CV nuevamente.")
+    return result
+
+
 def adapt_cv_content(analysis: dict[str, Any]) -> dict[str, Any]:
     p = profile()
     prompt = f"""Crea el contenido final de un CV adaptado a esta oferta. {CV_SCHEMA}
@@ -478,7 +534,7 @@ EVIDENCIA TEXTUAL DE TODOS LOS CV BASE:
     result = ask_json(prompt)
     result = ask_json(f"""Realiza la validación final del borrador como reclutador senior con 30 segundos para decidir una entrevista. Reescribe automáticamente lo necesario y devuelve únicamente el JSON final con el mismo esquema. {CV_SCHEMA}
 
-Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto directamente con la profesión validada más pertinente y su especialización, sin 'Como', 'Soy' ni 'Cuento con'; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; máximo 4 bullets relevantes de 18 palabras; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; experiencias irrelevantes sin bullets; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
+Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto directamente con la profesión validada más pertinente y su especialización, sin 'Como', 'Soy' ni 'Cuento con'; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; entre 1 y 4 bullets relevantes de 18 palabras en cada experiencia, sin dejar empresas como simples encabezados; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
 
 BORRADOR:
 {json.dumps(result, ensure_ascii=False)[:60000]}
@@ -491,6 +547,8 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
 {master_text()[:90000]}
 """)
 
+    result = _correct_summary(result, analysis, p)
+
     clean_experiences = []
     adapted = result.get("experience", [])
     used_bullets: set[str] = set()
@@ -500,8 +558,8 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
         company_matches = [x for x in adapted if company.lower() in str(x.get("company", "")).lower() or str(x.get("company", "")).lower() in company.lower()]
         match = next((x for x in company_matches if dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())), None) or (company_matches[0] if company_matches else None)
         source = match or base_exp
-        relevant = bool(match and match.get("include_detail", True))
-        bullets = source.get("bullets", []) if relevant else []
+        relevant = True
+        bullets = source.get("bullets", [])
         selected_bullets = []
         for item in bullets:
             normalized = re.sub(r"\W+", " ", str(item).lower()).strip()
@@ -509,6 +567,19 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
             used_bullets.add(normalized)
             selected_bullets.append(_words(item, 18))
             if len(selected_bullets) == 4: break
+        if not selected_bullets:
+            fallback_items = []
+            for key in ("achievements", "results", "functions", "projects"):
+                value = base_exp.get(key, [])
+                fallback_items.extend(value if isinstance(value, list) else [value])
+            fallback_items.append(base_exp.get("summary", ""))
+            for item in fallback_items:
+                normalized = re.sub(r"\W+", " ", str(item).lower()).strip()
+                if not normalized or normalized in used_bullets:
+                    continue
+                used_bullets.add(normalized)
+                selected_bullets.append(_words(item, 18))
+                break
         clean_experiences.append({
             "company": company,
             "location": str(source.get("location", "Santiago")),
@@ -524,7 +595,7 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
     result["languages"] = result.get("languages") or p.get("languages", [])
     result["education"] = result.get("education") or [{"credential": str(x), "institution": "", "dates": ""} for x in p.get("education", [])]
     while cv_word_count(result) > 700:
-        candidate = next((x for x in reversed(result["experience"]) if x.get("bullets")), None)
+        candidate = next((x for x in reversed(result["experience"]) if len(x.get("bullets", [])) > 1), None)
         if not candidate: break
         candidate["bullets"].pop()
     return result
