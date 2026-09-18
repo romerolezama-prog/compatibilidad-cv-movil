@@ -35,7 +35,7 @@ DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
 GENERATED = ROOT / "generated"
 DB = DATA / "compatibilidad.db"
-APP_VERSION = "2026-09-18"
+APP_VERSION = "2026-09-18.1"
 for folder in (DATA, UPLOADS, GENERATED):
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -379,7 +379,7 @@ Reglas: no inventes ni completes vacíos por intuición; conserva cifras exactam
 
 ANALYSIS_SCHEMA = """Devuelve exclusivamente JSON válido:
 {"company":"","role":"","location":"","modality":"","summary":"","requirements":[""],"score":0,"match_explanation":"","strengths":[{"area":"","evidence":""}],"partial_matches":[{"area":"","detail":""}],"weaknesses":[{"area":"","impact":""}],"ats_keywords":[""],"cv_focus":[""],"suggested_questions":[""]}
-El score debe ser entero 0-100 y basarse solo en evidencia real. Pondera requisitos obligatorios, experiencia, herramientas, formación e idioma. No infieras experiencia ausente. No penalices por sí sola la ausencia de una herramienta específica: evalúa herramientas equivalentes, experiencia transferible y capacidad demostrada para ejecutar la función."""
+El score debe ser entero 0-100 y basarse solo en evidencia real. Distingue tareas centrales del cargo, requisitos obligatorios y deseables; pondera experiencia, herramientas, formación e idioma. No infieras experiencia ausente. No penalices por sí sola la ausencia de una herramienta específica: evalúa herramientas equivalentes, experiencia transferible y capacidad demostrada para ejecutar la función. En cv_focus ordena los 3-5 argumentos comprobados que más convencerían al reclutador para esta vacante. Distingue claramente coincidencia directa, experiencia transferible y brecha sin respaldo; una brecha no se transforma en habilidad del CV."""
 
 
 CV_SCHEMA = """Devuelve exclusivamente JSON válido con esta forma:
@@ -389,6 +389,11 @@ Reglas obligatorias:
 - Adapta el resumen, las funciones, habilidades y herramientas al cargo y vocabulario de la oferta.
 - Usa exclusivamente hechos comprobables presentes en documentos cargados y en el Perfil Maestro.
 - Antes de redactar, pregúntate internamente: 'Si yo fuera el reclutador de esta oferta, ¿qué información específica me convencería de entrevistar a este candidato?'. No muestres la respuesta; úsala para seleccionar el contenido.
+- Ordena la evidencia por utilidad para las TAREAS CENTRALES de esta vacante, no por prestigio del cargo ni por presencia de cifras. Da prioridad a responsabilidades, proyectos y logros directamente relacionados; después a experiencia transferible demostrable. Usa cv_focus como guía, pero verifica cada afirmación contra el Perfil Maestro y documentos.
+- Distingue coincidencias directas, transferibles y requisitos sin respaldo. No afirmes conocimientos, herramientas, disponibilidad, licencias ni experiencia en disciplinas que las fuentes no demuestren; tampoco insinúes que una habilidad cercana equivale a una especialidad técnica ausente. No enumeres las brechas dentro del CV.
+- Si la oferta es operativa o de coordinación de terreno, prioriza requerimientos, ejecución, instalaciones, proveedores, contratistas, equipos internos, seguimiento y resolución cuando estén documentados. Las métricas, dashboards, presupuestos y automatizaciones solo deben ocupar espacio destacado si apoyan esas funciones o son centrales en la oferta.
+- Evita viñetas genéricas como 'aseguré continuidad operativa' sin una acción concreta respaldada. Prefiere la acción específica y su resultado comprobado. Mantén la experiencia de todas las empresas, pero asigna más viñetas a las más pertinentes para la vacante.
+- Ante una oferta de menor seniority, no ocultes fechas ni cargos ni cambies tu trayectoria: enfatiza la capacidad de ejecutar las tareas diarias y modera el tono directivo sin degradar cargos reales.
 - Conserva TODAS las empresas, cargos y fechas en el mismo orden cronológico. Cada experiencia debe tener al menos 1 viñeta real, validada y relevante para la oferta; las experiencias de mayor impacto pueden tener hasta 4. Nunca devuelvas una experiencia con bullets vacíos ni como simple encabezado.
 - Redacta TODO el resumen y las viñetas de experiencia en primera persona singular, con sujeto implícito y sin repetir la palabra 'yo'. Ejemplos: 'Constructor Civil especializado en...', 'He liderado...', 'Gestiono...' y 'Planifiqué...'.
 - Para el cargo actual usa presente o pretérito perfecto en primera persona; para cargos anteriores usa pasado en primera persona. Nunca uses tercera persona como 'ha gestionado', 'gestiona', 'desarrolla', 'planificó' o 'controló'.
@@ -398,7 +403,7 @@ Reglas obligatorias:
 - No calcules ni declares años de experiencia, industrias o tipos de proyectos salvo que la fuente documental los afirme explícitamente y sin ambigüedad.
 - Reproduce los cargos canónicos del Perfil Maestro; nunca fusiones cargos distintos con barras ni copies el cargo de otra empresa.
 - Entre 1 y 4 viñetas por experiencia y máximo 18 palabras por viñeta.
-- Prioriza logros, implementaciones, automatizaciones, liderazgo, optimizaciones y resultados antes que funciones.
+- Prioriza logros y resultados RELEVANTES para la vacante; una función central comprobada vale más que una métrica impresionante pero periférica.
 - Elimina funciones repetidas entre cargos; ubica cada responsabilidad donde tenga mayor impacto.
 - Incluye cifras reales (proyectos, equipos, presupuestos, CAPEX, OPEX, superficies, porcentajes, ahorros, productividad y plazos) solo cuando estén validadas en las fuentes.
 - Máximo 8 habilidades y 7 herramientas; incluye solo las relevantes y con nivel real cuando exista.
@@ -609,7 +614,7 @@ EVIDENCIA VALIDADA:
 
 def adapt_cv_content(analysis: dict[str, Any]) -> dict[str, Any]:
     p = profile()
-    prompt = f"""Crea el contenido final de un CV adaptado a esta oferta. {CV_SCHEMA}
+    prompt = f"""Crea el contenido final de un CV adaptado a esta oferta. Primero identifica internamente las tareas centrales y los 3-5 hechos documentados que mejor las demuestran; después selecciona y redacta. No muestres ese razonamiento. {CV_SCHEMA}
 
 OFERTA Y ANÁLISIS INTERNO:
 {json.dumps(analysis, ensure_ascii=False)[:60000]}
@@ -623,7 +628,7 @@ EVIDENCIA TEXTUAL DE TODOS LOS CV BASE:
     result = ask_json(prompt)
     result = ask_json(f"""Realiza la validación final del borrador como reclutador senior con 30 segundos para decidir una entrevista. Reescribe automáticamente lo necesario y devuelve únicamente el JSON final con el mismo esquema. {CV_SCHEMA}
 
-Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto directamente con la profesión validada más pertinente y su especialización, sin 'Como', 'Soy' ni 'Cuento con'; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; entre 1 y 4 bullets relevantes de 18 palabras en cada experiencia, sin dejar empresas como simples encabezados; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de logros y cifras reales; ninguna afirmación sin respaldo documental.
+Comprueba obligatoriamente: máximo aproximado de 700 palabras; resumen máximo 80 palabras y abierto directamente con la profesión validada más pertinente y su especialización, sin 'Como', 'Soy' ni 'Cuento con'; primera persona singular; ninguna duración, industria o tipo de proyecto calculado por inferencia; entre 1 y 4 bullets relevantes de 18 palabras en cada experiencia, sin dejar empresas como simples encabezados; todas las empresas, cargos canónicos y fechas presentes sin fusionar cargos; ausencia de funciones repetidas; palabras ATS integradas naturalmente; prioridad de evidencia que responde a las tareas centrales sobre métricas periféricas; logros y cifras reales solo si refuerzan esa evidencia; ninguna afirmación sin respaldo documental. Si la oferta pide una especialidad no acreditada (por ejemplo, electricidad o climatización), no la atribuyas al candidato ni la sustituyas por una habilidad distinta. Reordena el resumen y las viñetas para que un reclutador comprenda en 30 segundos por qué puede desempeñar las funciones respaldadas.
 
 BORRADOR:
 {json.dumps(result, ensure_ascii=False)[:60000]}
@@ -764,13 +769,13 @@ def _build_cv_pdf(target: Path, content: dict[str, Any], p: dict[str, Any], comp
     story += [PageBreak(), _section("Antecedentes Académicos", styles), Spacer(1, 2*mm)]
     for edu in content.get("education", []):
         if isinstance(edu, str): edu = {"credential": edu, "institution": "", "dates": ""}
-        row = Table([[Paragraph(f"<b>{safe(edu.get('credential'))}</b><br/>{safe(edu.get('institution',''))}", styles["body"]), Paragraph(safe(edu.get("dates", "")), styles["date"])]], colWidths=[118*mm, 32*mm], hAlign="LEFT")
+        row = Table([[Paragraph(f"<b>{safe(edu.get('credential'))}</b><br/>{safe(edu.get('institution',''))}", styles["company"]), Paragraph(safe(edu.get("dates", "")), styles["date"])]], colWidths=[110*mm, 40*mm], hAlign="LEFT")
         row.setStyle(TableStyle([("ALIGN", (1,0), (1,0), "RIGHT"), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 0), ("RIGHTPADDING", (0,0), (-1,-1), 0), ("TOPPADDING", (0,0), (-1,-1), 0), ("BOTTOMPADDING", (0,0), (-1,-1), 1)]))
         story.append(row)
 
     skill_text = "<br/>".join(f"- {safe(x)}" for x in content.get("skills", []))
     tool_text = "<br/>".join(f"- {safe(x)}" for x in content.get("tools", []))
-    abilities = Table([[Paragraph("Habilidades", styles["label"]), Paragraph(skill_text, styles["body"])], [Paragraph("Software", styles["label"]), Paragraph(tool_text, styles["body"])]], colWidths=[40*mm, 110*mm], hAlign="LEFT")
+    abilities = Table([[Paragraph("Competencias", styles["label"]), Paragraph(skill_text, styles["body"])], [Paragraph("Software", styles["label"]), Paragraph(tool_text, styles["body"])]], colWidths=[40*mm, 110*mm], hAlign="LEFT")
     abilities.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 2), ("RIGHTPADDING", (0,0), (-1,-1), 2), ("TOPPADDING", (0,0), (-1,-1), 1), ("BOTTOMPADDING", (0,0), (-1,-1), 2)]))
     story += [Spacer(1, 2.5*mm), KeepTogether([_section("Habilidades", styles), Spacer(1, 2*mm), abilities]), Spacer(1, 2.5*mm), _section("Información Adicional", styles), Spacer(1, 2*mm)]
     language = ", ".join(re.sub(r"\bnivel\s+reportado\b", "nivel", str(x), flags=re.I) for x in content.get("languages", []))
