@@ -18,11 +18,14 @@ from docx import Document
 from openai import OpenAI
 from PIL import Image
 from pypdf import PdfReader
+import reportlab
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
@@ -35,7 +38,7 @@ DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
 GENERATED = ROOT / "generated"
 DB = DATA / "compatibilidad.db"
-APP_VERSION = "2026-09-18.1"
+APP_VERSION = "2026-09-18.2"
 for folder in (DATA, UPLOADS, GENERATED):
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -713,19 +716,29 @@ def cv_word_count(content: dict[str, Any]) -> int:
     return len(re.findall(r"\b[\wÁÉÍÓÚÜÑáéíóúüñ]+\b", " ".join(fields)))
 
 
+def _register_cv_fonts() -> None:
+    """Incrusta fuentes Unicode para que ATS y copiar/pegar conserven acentos."""
+    fonts = Path(reportlab.__file__).resolve().parent / "fonts"
+    if "CVVera" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("CVVera", str(fonts / "Vera.ttf")))
+        pdfmetrics.registerFont(TTFont("CVVera-Bold", str(fonts / "VeraBd.ttf")))
+        pdfmetrics.registerFontFamily("CVVera", normal="CVVera", bold="CVVera-Bold")
+
+
 def _cv_styles(compact: bool = False) -> dict[str, ParagraphStyle]:
+    _register_cv_fonts()
     body_size = 9.4 if compact else 9.8
     leading = 11.2 if compact else 11.8
     return {
-        "name": ParagraphStyle("CVName", fontName="Helvetica-Bold", fontSize=18, leading=21, alignment=TA_CENTER, spaceAfter=1),
-        "contact": ParagraphStyle("CVContact", fontName="Helvetica", fontSize=10.4, leading=12.2, alignment=TA_CENTER, spaceAfter=0),
-        "section": ParagraphStyle("CVSection", fontName="Helvetica-Bold", fontSize=10.8, leading=13, alignment=TA_LEFT),
-        "body": ParagraphStyle("CVBody", fontName="Helvetica", fontSize=body_size, leading=leading, alignment=TA_JUSTIFY, spaceAfter=1),
-        "company": ParagraphStyle("CVCompany", fontName="Helvetica", fontSize=body_size, leading=leading, alignment=TA_LEFT),
-        "date": ParagraphStyle("CVDate", fontName="Helvetica", fontSize=body_size, leading=leading, alignment=TA_LEFT),
-        "role": ParagraphStyle("CVRole", fontName="Helvetica-Bold", fontSize=body_size, leading=leading, alignment=TA_LEFT, spaceAfter=1),
-        "bullet": ParagraphStyle("CVBullet", fontName="Helvetica", fontSize=body_size, leading=leading, alignment=TA_JUSTIFY, leftIndent=12, firstLineIndent=0, bulletIndent=0, spaceAfter=1),
-        "label": ParagraphStyle("CVLabel", fontName="Helvetica-Bold", fontSize=body_size, leading=leading, alignment=TA_LEFT),
+        "name": ParagraphStyle("CVName", fontName="CVVera-Bold", fontSize=18, leading=21, alignment=TA_CENTER, spaceAfter=1),
+        "contact": ParagraphStyle("CVContact", fontName="CVVera", fontSize=10.4, leading=12.2, alignment=TA_CENTER, spaceAfter=0),
+        "section": ParagraphStyle("CVSection", fontName="CVVera-Bold", fontSize=10.8, leading=13, alignment=TA_LEFT),
+        "body": ParagraphStyle("CVBody", fontName="CVVera", fontSize=body_size, leading=leading, alignment=TA_JUSTIFY, spaceAfter=1),
+        "company": ParagraphStyle("CVCompany", fontName="CVVera", fontSize=body_size, leading=leading, alignment=TA_LEFT),
+        "date": ParagraphStyle("CVDate", fontName="CVVera", fontSize=body_size, leading=leading, alignment=TA_LEFT),
+        "role": ParagraphStyle("CVRole", fontName="CVVera-Bold", fontSize=body_size, leading=leading, alignment=TA_LEFT, spaceAfter=1),
+        "bullet": ParagraphStyle("CVBullet", fontName="CVVera", fontSize=body_size, leading=leading, alignment=TA_JUSTIFY, leftIndent=12, firstLineIndent=0, bulletIndent=0, spaceAfter=1),
+        "label": ParagraphStyle("CVLabel", fontName="CVVera-Bold", fontSize=body_size, leading=leading, alignment=TA_LEFT),
     }
 
 
