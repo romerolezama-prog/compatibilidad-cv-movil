@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
 GENERATED = ROOT / "generated"
 DB = DATA / "compatibilidad.db"
+APP_VERSION = "2026-09-18"
 for folder in (DATA, UPLOADS, GENERATED):
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -93,6 +95,16 @@ def cloud_enabled() -> bool:
     return cloud_client() is not None
 
 
+if server_secret("APP_LOCAL_MODE") != "1":
+    try:
+        storage_ready = cloud_enabled()
+    except Exception:
+        storage_ready = False
+    if not storage_ready:
+        st.error("Falta configurar Supabase. La aplicación móvil no guardará datos en un disco temporal. Revisa SUPABASE_URL y SUPABASE_SECRET_KEY en los secretos de Streamlit.")
+        st.stop()
+
+
 def cloud_download(remote: str, local: Path) -> bool:
     client = cloud_client()
     if not client:
@@ -106,21 +118,30 @@ def cloud_download(remote: str, local: Path) -> bool:
         return False
 
 
-def cloud_upload(local: Path, remote: str, content_type: str = "application/octet-stream") -> None:
+def cloud_upload_bytes(payload: bytes, remote: str, content_type: str = "application/octet-stream") -> None:
     client = cloud_client()
-    if not client or not local.exists():
+    if not client:
         return
     bucket = client.storage.from_(server_secret("SUPABASE_BUCKET", "cv-postulacion"))
-    payload = local.read_bytes()
     options = {"content-type": content_type, "upsert": "true"}
     try:
         bucket.upload(path=remote, file=payload, file_options=options)
-    except Exception:
-        bucket.update(path=remote, file=payload, file_options={"content-type": content_type})
+    except Exception as exc:
+        raise RuntimeError("No se pudo guardar en Supabase. Comprueba que el proyecto esté activo y vuelve a intentarlo.") from exc
+
+
+def cloud_upload(local: Path, remote: str, content_type: str = "application/octet-stream") -> None:
+    if local.exists():
+        cloud_upload_bytes(local.read_bytes(), remote, content_type)
 
 
 def cloud_backup_db() -> None:
-    cloud_upload(DB, "state/compatibilidad.db", "application/x-sqlite3")
+    if not cloud_enabled():
+        return
+    # Una copia coherente evita subir un SQLite a medio escribir.
+    with closing(sqlite3.connect(DB)) as source, closing(sqlite3.connect(":memory:")) as snapshot:
+        source.backup(snapshot)
+        cloud_upload_bytes(snapshot.serialize(), "state/compatibilidad.db", "application/x-sqlite3")
 
 
 def cloud_document_path(path: Path) -> str:
@@ -131,8 +152,23 @@ def cloud_document_path(path: Path) -> str:
     return f"uploads/{token}{suffix}"
 
 
-if not DB.exists():
-    cloud_download("state/compatibilidad.db", DB)
+def restore_initial_database() -> None:
+    if DB.exists() or not cloud_enabled():
+        return
+    try:
+        raw_db = cloud_client().storage.from_(server_secret("SUPABASE_BUCKET", "cv-postulacion")).download("state/compatibilidad.db")
+    except Exception as exc:
+        if str(getattr(exc, "status_code", "")) != "404":
+            raise RuntimeError("No se pudo recuperar la base de datos desde Supabase. No se iniciará una base vacía para proteger tu perfil e historial. Reactiva Supabase y recarga la página.") from exc
+    else:
+        DB.write_bytes(raw_db)
+
+
+try:
+    restore_initial_database()
+except RuntimeError as exc:
+    st.error(str(exc))
+    st.stop()
 
 
 def conn() -> sqlite3.Connection:
@@ -216,7 +252,20 @@ def file_text(name: str, data: bytes) -> str:
         return "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages).strip()
     if ext == ".docx":
         doc = Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        lines: list[str] = []
+        def collect(blocks: Any) -> None:
+            for block in blocks:
+                if hasattr(block, "rows"):
+                    for row in block.rows:
+                        for cell in row.cells:
+                            collect(cell.iter_inner_content())
+                elif str(getattr(block, "text", "")).strip():
+                    lines.append(block.text.strip())
+        collect(doc.iter_inner_content())
+        for section in doc.sections:
+            collect(section.header.iter_inner_content())
+            collect(section.footer.iter_inner_content())
+        return "\n".join(dict.fromkeys(lines))
     if ext == ".txt":
         return data.decode("utf-8", errors="replace")
     return ""
@@ -264,8 +313,27 @@ def validated_document_text(name: str, data: bytes) -> str:
 
 def master_text() -> str:
     with conn() as c:
-        rows = c.execute("SELECT name, extracted_text FROM cv_documents ORDER BY id").fetchall()
+        rows = c.execute("SELECT name, extracted_text FROM cv_documents ORDER BY id DESC").fetchall()
     return "\n\n".join(f"### {r['name']}\n{r['extracted_text']}" for r in rows)
+
+
+def document_batches(rows: list[Any], limit: int = 120000) -> list[str]:
+    """Incluye todos los documentos, sin descartar los que superan un corte global."""
+    batches: list[str] = []
+    current = ""
+    for row in rows:
+        name = str(row["name"])
+        body = str(row["extracted_text"])
+        chunk_size = max(1, limit - len(name) - 10)
+        for start in range(0, len(body), chunk_size):
+            part = f"### {name}\n{body[start:start + chunk_size]}\n\n"
+            if current and len(current) + len(part) > limit:
+                batches.append(current)
+                current = ""
+            current += part
+    if current:
+        batches.append(current)
+    return batches
 
 
 def profile() -> dict[str, Any]:
@@ -375,7 +443,11 @@ def merge_profiles(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[s
         company = re.sub(r"\W+", "", str(new_exp.get("company", "")).lower())
         role = re.sub(r"\W+", "", str(new_exp.get("role", "")).lower())
         dates = re.sub(r"\W+", "", str(new_exp.get("dates", "")).lower())
-        match_index = next((i for i,x in enumerate(merged_experience) if company and company == re.sub(r"\W+", "", str(x.get("company", "")).lower()) and ((dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())) or (role and role == re.sub(r"\W+", "", str(x.get("role", "")).lower())))), None)
+        match_index = next((i for i,x in enumerate(merged_experience)
+                            if company and company == re.sub(r"\W+", "", str(x.get("company", "")).lower())
+                            and ((dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower()))
+                                 or (not dates or not str(x.get("dates", "")).strip())
+                                 and role and role == re.sub(r"\W+", "", str(x.get("role", "")).lower()))), None)
         if match_index is None:
             merged_experience.append(new_exp)
         else:
@@ -395,25 +467,31 @@ def merge_profiles(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[s
 
 
 def rebuild_profile() -> None:
-    docs = master_text()
-    if not docs.strip():
+    with conn() as c:
+        rows = c.execute("SELECT name, extracted_text FROM cv_documents ORDER BY id DESC").fetchall()
+    batches = document_batches(rows)
+    if not batches:
         raise RuntimeError("Primero carga al menos un documento profesional.")
     existing = profile()
-    result = ask_json(
-        "Actualiza un Perfil Maestro profesional acumulativo. Compara el perfil existente con todos los documentos validados; "
-        "incorpora información nueva, fusiona información complementaria, evita duplicados y nunca elimines información previamente validada. "
-        "El Perfil Maestro no es un CV y no tiene límite de extensión. " + PROFILE_SCHEMA +
-        "\n\nPERFIL MAESTRO EXISTENTE:\n" + json.dumps(existing, ensure_ascii=False)[:80000] +
-        "\n\nDOCUMENTOS VALIDADOS:\n" + docs[:140000]
-    )
-    result = merge_profiles(existing, result)
+    result = existing
+    for docs in batches:
+        updated = ask_json(
+            "Actualiza un Perfil Maestro profesional acumulativo. Compara el perfil existente con los documentos validados de este lote; "
+            "incorpora información nueva, fusiona información complementaria, evita duplicados y nunca elimines información previamente validada. "
+            "El Perfil Maestro no es un CV y no tiene límite de extensión. " + PROFILE_SCHEMA +
+            "\n\nPERFIL MAESTRO EXISTENTE:\n" + json.dumps(result, ensure_ascii=False)[:80000] +
+            "\n\nDOCUMENTOS VALIDADOS (LOTE):\n" + docs
+        )
+        result = merge_profiles(result, updated)
     saved = personal_data()
     result["name"] = saved.get("name") or result.get("name", "")
     result.setdefault("contact", {})
     for key in ("email", "phone", "linkedin", "location"):
         if saved.get(key): result["contact"][key] = saved[key]
-    save_setting("master_profile", json.dumps(result, ensure_ascii=False))
-    save_setting("profile_updated", datetime.now().isoformat(timespec="seconds"))
+    with conn() as c:
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("master_profile", json.dumps(result, ensure_ascii=False)))
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("profile_updated", datetime.now().isoformat(timespec="seconds")))
+    cloud_backup_db()
 
 
 def recommendation(score: int) -> str:
@@ -422,6 +500,15 @@ def recommendation(score: int) -> str:
     if score >= 75:
         return "POSTULAR ESTRATÉGICAMENTE"
     return "NO POSTULAR"
+
+
+def normalized_score(value: Any) -> int:
+    """La recomendación y la pantalla deben usar exactamente el mismo porcentaje."""
+    try:
+        score = int(str(value).strip().removesuffix("%").strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("La IA no entregó un porcentaje de compatibilidad válido. Vuelve a analizar la oferta.") from exc
+    return max(0, min(100, score))
 
 
 def analyze_offer(text: str, images: list[tuple[str, bytes]]) -> dict[str, Any]:
@@ -434,11 +521,13 @@ PERFIL MAESTRO:
 TEXTO DE OFERTA:
 {text[:60000]}
 """
-    return ask_json(prompt, images)
+    analysis = ask_json(prompt, images)
+    analysis["score"] = normalized_score(analysis.get("score"))
+    return analysis
 
 
 def save_application(a: dict[str, Any], offer_text: str) -> int:
-    score = max(0, min(100, int(a.get("score", 0))))
+    score = normalized_score(a.get("score"))
     rec = recommendation(score)
     with conn() as c:
         cur = c.execute("""INSERT INTO applications(created_at,company,role,location,score,recommendation,offer_text,analysis_json)
@@ -555,8 +644,15 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
     for base_exp in p.get("experience", []):
         company = str(base_exp.get("company", ""))
         dates = re.sub(r"\W+", "", str(base_exp.get("dates", "")).lower())
-        company_matches = [x for x in adapted if company.lower() in str(x.get("company", "")).lower() or str(x.get("company", "")).lower() in company.lower()]
-        match = next((x for x in company_matches if dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())), None) or (company_matches[0] if company_matches else None)
+        company_key = re.sub(r"\W+", "", company.casefold())
+        company_matches = []
+        for candidate in adapted:
+            candidate_key = re.sub(r"\W+", "", str(candidate.get("company", "")).casefold())
+            if company_key and candidate_key and (company_key == candidate_key or (min(len(company_key), len(candidate_key)) >= 6 and (company_key in candidate_key or candidate_key in company_key))):
+                company_matches.append(candidate)
+        match = next((x for x in company_matches if dates and dates == re.sub(r"\W+", "", str(x.get("dates", "")).lower())), None)
+        if match is None and len(company_matches) == 1:
+            match = company_matches[0]
         source = match or base_exp
         relevant = True
         bullets = source.get("bullets", [])
@@ -583,7 +679,7 @@ PERFIL MAESTRO Y EVIDENCIA VALIDADA:
         clean_experiences.append({
             "company": company,
             "location": str(source.get("location", "Santiago")),
-            "role": str(source.get("role") or base_exp.get("role", "")),
+            "role": str(base_exp.get("role") or source.get("role", "")),
             "dates": str(base_exp.get("dates", source.get("dates", ""))),
             "include_detail": relevant,
             "bullets": selected_bullets,
@@ -690,7 +786,12 @@ def make_cv(app_id: int, analysis: dict[str, Any]) -> Path:
     issues = profile_issues(p)
     if issues:
         raise RuntimeError("Completa o vuelve a consolidar el perfil maestro. Faltan: " + ", ".join(issues) + ".")
-    content = analysis.get("adapted_cv") or adapt_cv_content(analysis)
+    profile_version = setting("profile_updated", "")
+    content = analysis.get("adapted_cv") if analysis.get("adapted_cv_profile_updated") == profile_version else None
+    if not isinstance(content, dict) or _summary_violations(content.get("summary", "")):
+        content = adapt_cv_content(analysis)
+    if any(not exp.get("bullets") for exp in content.get("experience", [])):
+        raise RuntimeError("Hay una experiencia sin información validada para su viñeta. Revisa el Perfil Maestro antes de generar el CV.")
     target = GENERATED / f"CV_adaptado_{app_id}.pdf"
     if cv_word_count(content) > 700:
         raise RuntimeError("La validación no logró ajustar el CV al máximo aproximado de 700 palabras.")
@@ -704,6 +805,7 @@ def make_cv(app_id: int, analysis: dict[str, Any]) -> Path:
     if pages > 2:
         raise RuntimeError("No fue posible ajustar el CV a dos páginas sin eliminar empresas. Revisa y acorta el perfil maestro.")
     analysis["adapted_cv"] = content
+    analysis["adapted_cv_profile_updated"] = profile_version
     with conn() as c:
         c.execute("UPDATE applications SET cv_path=?, analysis_json=? WHERE id=?", (str(target), json.dumps(analysis, ensure_ascii=False), app_id))
     cloud_upload(target, f"generated/{target.name}", "application/pdf")
@@ -720,7 +822,7 @@ def section_list(title: str, items: list[Any], first: str, second: str) -> None:
 
 
 def render_result(app_id: int, a: dict[str, Any]) -> None:
-    score = int(a.get("score", 0)); rec = recommendation(score)
+    score = normalized_score(a.get("score")); rec = recommendation(score)
     color = "good" if score >= 80 else "warn" if score >= 75 else "bad"
     c1, c2, c3 = st.columns(3)
     c1.metric("Compatibilidad", f"{score}%")
@@ -767,6 +869,7 @@ page = {"📸 Nueva":"Nueva postulación", "👤 Perfil":"Mi perfil maestro", "�
 
 if page == "Configuración":
     st.header("Configuración")
+    st.caption(f"Versión de la aplicación: {APP_VERSION}")
     if server_secret("OPENAI_API_KEY"):
         st.success("OpenAI está configurado de forma segura en el servidor.")
     else:
@@ -814,11 +917,16 @@ elif page == "Mi perfil maestro":
             except Exception as e: st.warning(f"{f.name}: no se pudo validar el contenido ({e})."); continue
             if not text.strip(): st.warning(f"{f.name}: no se pudo extraer texto; si es un PDF escaneado, súbelo como imagen o conviértelo a DOCX/TXT."); continue
             target = UPLOADS / f"{sha[:12]}_{Path(f.name).name}"; target.write_bytes(raw)
+            try:
+                cloud_upload(target, cloud_document_path(target))
+            except RuntimeError as e:
+                st.error(f"{f.name}: {e}")
+                continue
             with conn() as c:
                 try: c.execute("INSERT INTO cv_documents(name,sha256,path,extracted_text,added_at) VALUES(?,?,?,?,?)", (f.name, sha, str(target), text, datetime.now().isoformat(timespec="seconds"))); added += 1
                 except sqlite3.IntegrityError: pass
-            cloud_upload(target, cloud_document_path(target))
-        cloud_backup_db()
+        if added:
+            cloud_backup_db()
         st.success(f"{added} documentos nuevos guardados y validados."); st.rerun()
     if docs:
         for d in docs: st.write(f"✓ {d['name']} — {d['added_at']}")
